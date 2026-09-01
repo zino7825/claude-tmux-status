@@ -31,6 +31,10 @@ SH_JSON="$CACHE/${PANE_SH#%}.json"
 rm -f "$PY_JSON" "$SH_JSON" "$CACHE/.sweep-$(basename "$SOCKET_PATH")" \
       "$CACHE/.summary-$(basename "$SOCKET_PATH")" 2>/dev/null
 
+# Freeze the clock for both editions from the very start: the two hook runs happen a
+# moment apart, so without this turn_ts/ts differ by a second now and then.
+export CSM_NOW="$(date +%s)"
+
 # ── 1. state machine: feed the same event sequence to both ──────────────
 feed() {  # $1=impl $2=pane $3=event $4=payload
   local cmd=(./csm hook "$3")
@@ -64,7 +68,9 @@ fi
 # Looking at real sessions makes the comparison flaky (state changes between runs).
 # Point both at the test server only, and freeze the timestamps an hour in the past.
 export TMUX="$SOCKET_PATH,1,0"
-FIXED=$(( $(date +%s) - 3600 ))
+# Freeze the clock for both editions: without this the "3m02s" style progress column
+# can tick over between the two runs and the diff reports a difference that is not one.
+FIXED=$(( CSM_NOW - 3600 ))
 cat > "$PY_JSON" <<JSON
 {"pane":"$PANE_PY","socket":"$SOCKET_PATH","state":"done","session_id":"s1",
  "cwd":"$HOME/git/some-project","ts":$FIXED,"turn_ts":$FIXED,"tools":7,"tool":"Bash",

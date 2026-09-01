@@ -69,6 +69,12 @@ BOLD, DIM, RST = "\033[1m", "\033[2m", "\033[0m"
 # "Treat ambiguous-width characters as double-width". Set CSM_AMBIWIDTH=1 otherwise.
 AMBI = 1 if os.environ.get("CSM_AMBIWIDTH") == "1" else 2
 
+
+def now():
+    """Current time. CSM_NOW freezes it so compat-test.sh can compare two runs."""
+    v = os.environ.get("CSM_NOW")
+    return int(v) if v and v.isdigit() else int(time.time())
+
 # This width table must match the awk function in the bash edition exactly. Using
 # unicodedata here would be unmatchable there (the EastAsianWidth table is ~5KB), so
 # both sides carry the same trimmed ranges. U+2713 and U+2699 are Neutral = 1 column;
@@ -237,7 +243,7 @@ def collect(prune=True, live=None):
         state = st.get("state") or "done"
         inflight = int(st.get("pre", 0)) - int(st.get("post", 0))
         ts = int(st.get("ts", 0))
-        if state == "working" and inflight <= 0 and time.time() - ts > STALL:
+        if state == "working" and inflight <= 0 and now() - ts > STALL:
             state = "stall"
         rows.append({
             "pane": pane, "win": m["win"], "idx": m["idx"], "wname": m["wname"],
@@ -270,7 +276,7 @@ def collect(prune=True, live=None):
 
 # ── table ──────────────────────────────────────────────────────────────────
 def ago(sec):
-    d = max(0, int(time.time()) - int(sec))
+    d = max(0, now() - int(sec))
     if d < 60:
         return f"{d}{TXT['sec']}"
     if d < 3600:
@@ -335,7 +341,7 @@ def render(rows, color=None):
             if r["agents"]:
                 prog += f" ⚙{r['agents']}"
             if r["turn"]:
-                prog += f" {dur(time.time() - r['turn'])}"
+                prog += f" {dur(now() - r['turn'])}"
             if r["tool"]:
                 prog += f" {r['tool']}{'…' if r['inflight'] else ''}"
         else:
@@ -430,7 +436,7 @@ def update_windows(rows, live):
             if top["agents"]:
                 detail += f"⚙{top['agents']}"
             if top["turn"]:
-                e = short(time.time() - top["turn"])
+                e = short(now() - top["turn"])
                 if e:
                     detail += f"·{e}"
         suffix = f"×{len(mine)}" if len(mine) > 1 else ""
@@ -465,14 +471,14 @@ def sweep(force=False):
     cached = os.path.join(CACHE, f".summary-{tag}")
     if not force:
         try:
-            if time.time() - float(open(stamp).read().strip()) < SWEEP_GAP:
+            if now() - float(open(stamp).read().strip()) < SWEEP_GAP:
                 try: return open(cached).read()
                 except OSError: return ""
         except (OSError, ValueError):
             pass
     try:
         with open(stamp, "w") as fh:
-            fh.write(str(int(time.time())))
+            fh.write(str(now()))
     except OSError:
         pass
     live = panes()
@@ -509,14 +515,14 @@ def hook(event):
         payload = {}
 
     prev = read_state(cache_path(pane)) or {}
-    now = int(time.time())
+    ts_now = now()
     st = {
         "pane": pane,
         "socket": os.environ.get("TMUX", "").split(",")[0],
         "state": prev.get("state") or "",
         "session_id": payload.get("session_id") or prev.get("session_id") or "",
         "cwd": payload.get("cwd") or prev.get("cwd") or os.getcwd(),
-        "ts": now,
+        "ts": ts_now,
         "turn_ts": int(prev.get("turn_ts", 0)),
         "tools": int(prev.get("tools", 0)),
         "tool": prev.get("tool") or "",
@@ -529,7 +535,7 @@ def hook(event):
     tool = payload.get("tool_name") or ""
 
     if event in ("start", "working"):          # new turn - the only done -> working transition
-        st.update(state="working", turn_ts=now, tools=0, agents=0, agents_done=0,
+        st.update(state="working", turn_ts=ts_now, tools=0, agents=0, agents_done=0,
                   pre=0, post=0, tool="")
         # what this turn was asked to do = one line of the prompt; the task column shows it
         prompt = " ".join((payload.get("prompt") or "").split())
@@ -537,7 +543,7 @@ def hook(event):
             st["task"] = prompt[:120]
     elif event == "tool":                      # PreToolUse - actually working right now
         if st["state"] == "done":              # some turns start without a prompt event
-            st.update(turn_ts=now, tools=0, agents=0, agents_done=0, pre=0, post=0)
+            st.update(turn_ts=ts_now, tools=0, agents=0, agents_done=0, pre=0, post=0)
         st["pre"] += 1
         st["tools"] += 1
         st["tool"] = tool
@@ -546,7 +552,7 @@ def hook(event):
         # tools that always wait for a human go straight to "waiting"
         st["state"] = "input" if tool in ("AskUserQuestion", "ExitPlanMode") else "working"
         if not st["turn_ts"]:
-            st["turn_ts"] = now
+            st["turn_ts"] = ts_now
     elif event == "tooldone":                  # PostToolUse
         st["post"] += 1
         if tool:

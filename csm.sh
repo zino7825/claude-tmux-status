@@ -29,7 +29,8 @@ SWEEP_GAP=5
 T=$'\t'
 NIL='-'                         # placeholder for empty fields (read collapses repeated tabs)
 AMBI="${CSM_AMBIWIDTH:-2}"      # width of ambiguous glyphs; set 1 for narrow terminals
-NOW="$(date +%s)"               # once per run
+# Current time, once per run. CSM_NOW freezes it so compat-test.sh can compare two runs.
+NOW="${CSM_NOW:-$(date +%s)}"
 
 # Output language: $LANG decides, CSM_LANG overrides. The python edition carries the
 # same two tables — compat-test.sh compares the rendered tables byte for byte.
@@ -696,7 +697,7 @@ cmd_watch() {
   if [ ! -t 1 ]; then cmd_list; return 0; fi     # piped (e.g. a Bash tool call): never loop
   local key
   while :; do
-    NOW="$(date +%s)"
+    NOW="${CSM_NOW:-$(date +%s)}"
     state_pass 0
     printf '\033[H\033[2J'
     render "$ROWS"
