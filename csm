@@ -190,6 +190,41 @@ def claude_panes(live, skip=()):
     return found
 
 
+def pane_owning():
+    """Pane whose process tree contains us, for hooks that get no TMUX_PANE.
+
+    Claude Code can host a session under a daemon-spawned pty (`claude daemon run` ->
+    `claude --bg-pty-host`, which is what a resumed or forked session gets): the pane's
+    shell is still an ancestor, but TMUX_PANE is not in that environment, so the hook
+    used to write nothing at all and the row kept whatever state it had before the
+    fork. Walk our parents and take the first pane_pid we meet.
+
+    Only panes of the default server are reachable here - with no TMUX there is nothing
+    that names another socket, and a miss just falls back to the old quiet exit.
+    """
+    live = panes()
+    if not live:
+        return None, None
+    by_pid = {m["pid"]: pane for pane, m in live.items()}
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,ppid="],
+                             capture_output=True, text=True).stdout
+    except Exception:
+        return None, None
+    parent = {}
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) == 2:
+            parent[f[0]] = f[1]
+    pid, seen = str(os.getpid()), set()
+    while pid and pid not in ("0", "1") and pid not in seen:
+        if pid in by_pid:
+            return by_pid[pid], socket_path()
+        seen.add(pid)
+        pid = parent.get(pid)
+    return None, None
+
+
 # ── state cache ────────────────────────────────────────────────────────────
 def cache_path(pane):
     return os.path.join(CACHE, pane.lstrip("%") + ".json")
@@ -506,9 +541,14 @@ def advance(prev):
 
 
 def hook(event):
-    pane = os.environ.get("TMUX_PANE")
-    if not pane or not have_tmux():
+    if not have_tmux():
         return 0                      # outside tmux: pass quietly, a hook must not fail the turn
+    pane = os.environ.get("TMUX_PANE")
+    sock = os.environ.get("TMUX", "").split(",")[0]
+    if not pane:                      # daemon-hosted session: the env is gone, the tree is not
+        pane, sock = pane_owning()
+    if not pane:
+        return 0
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except Exception:
@@ -518,7 +558,7 @@ def hook(event):
     ts_now = now()
     st = {
         "pane": pane,
-        "socket": os.environ.get("TMUX", "").split(",")[0],
+        "socket": sock or prev.get("socket") or "",
         "state": prev.get("state") or "",
         "session_id": payload.get("session_id") or prev.get("session_id") or "",
         "cwd": payload.get("cwd") or prev.get("cwd") or os.getcwd(),

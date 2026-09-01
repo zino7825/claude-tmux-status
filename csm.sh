@@ -473,11 +473,37 @@ esc() {   # JSON string escape (backslash and quote only; control chars are alre
   printf '%s' "${s//\"/\\\"}"
 }
 
+pane_owning() {   # pane whose process tree holds us, when the hook gets no TMUX_PANE
+  # Claude Code can host a session under a daemon-spawned pty (`claude daemon run` ->
+  # `claude --bg-pty-host`, which is what a resumed or forked session gets): the pane's
+  # shell is still an ancestor, but TMUX_PANE is not in that environment. Without this
+  # the hook wrote nothing and the row kept its pre-fork state forever.
+  # Only the default server is reachable here - with no TMUX nothing names another socket.
+  local map out
+  map="$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)" || return 1
+  [ -n "$map" ] || return 1
+  out="$( { printf '%s\n' "$map"; echo '--'; ps -eo pid=,ppid=; } | awk -v self=$$ '
+    /^--$/            { sep = 1; next }
+    !sep              { pane[$1] = $2; next }
+                      { par[$1] = $2 }
+    END { pid = self
+          for (i = 0; i < 64 && pid != "" && pid != "0" && pid != "1"; i++) {
+            if (pid in pane) { print pane[pid]; exit }
+            pid = par[pid]
+          } }')"
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
 cmd_hook() {
-  local STATE="${1:-done}" me payload sid cwd tool msg prompt line
-  [ -n "${TMUX_PANE:-}" ] || return 0
+  local STATE="${1:-done}" me payload sid cwd tool msg prompt line PANE
+  PANE="${TMUX_PANE:-}"
+  if [ -z "$PANE" ]; then          # daemon-hosted session: the env is gone, the tree is not
+    PANE="$(pane_owning)" || return 0
+    [ -n "$PANE" ] || return 0
+  fi
   [ -d "$CACHE_DIR" ] || mkdir -p "$CACHE_DIR" 2>/dev/null
-  me="$CACHE_DIR/${TMUX_PANE#%}.json"
+  me="$CACHE_DIR/${PANE#%}.json"
   IFS= read -r -d '' payload 2>/dev/null || true   # builtin read, no cat process
 
   # Whole payload in one jq call (an earlier version spawned one per field)
@@ -540,7 +566,7 @@ cmd_hook() {
   esac
 
   printf '{"pane":"%s","socket":"%s","state":"%s","session_id":"%s","cwd":"%s","ts":%s,"turn_ts":%s,"tools":%s,"tool":"%s","agents":%s,"agents_done":%s,"pre":%s,"post":%s,"task":"%s"}\n' \
-    "$TMUX_PANE" "$(esc "${TMUX%%,*}")" "$STATE" "$(esc "$sid")" "$(esc "$cwd")" "$NOW" "$turn" \
+    "$PANE" "$(esc "$(socket_path)")" "$STATE" "$(esc "$sid")" "$(esc "$cwd")" "$NOW" "$turn" \
     "$tools" "$(esc "$curtool")" "$as" "$ad" "$pre" "$post" "$(esc "$task")" > "$me" 2>/dev/null
   cmd_sweep 1 >/dev/null
   return 0
