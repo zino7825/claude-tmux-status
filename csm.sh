@@ -675,7 +675,11 @@ EOF
     [ -s "$conf" ] && cp "$conf" "$conf.csm-bak"
     printf '%s\n' "$new" > "$conf"
     echo "$OKM .tmux.conf — block applied${body:+ (previous file: $conf.csm-bak)}"
-    if [ -n "${TMUX:-}" ] || tmux has-session >/dev/null 2>&1; then
+    # Only reload when this really is the running user's home. With HOME overridden
+    # (sandbox, test) the conf we just wrote is not the one that server reads, and
+    # sourcing it would push our settings onto someone else's session.
+    local real_home; real_home="$(eval echo "~$(id -un)")"
+    if [ "$HOME" = "$real_home" ] && { [ -n "${TMUX:-}" ] || tmux has-session >/dev/null 2>&1; }; then
       tmux source-file "$conf" 2>/dev/null && echo "$OKM tmux config reloaded"
     fi
   fi
