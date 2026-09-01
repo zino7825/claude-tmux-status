@@ -1,0 +1,4 @@
+*.bak
+*.csm-bak
+__pycache__/
+.DS_Store
