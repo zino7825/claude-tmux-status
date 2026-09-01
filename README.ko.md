@@ -111,6 +111,7 @@ tmux 1.8 부터 동작하고, 새 버전일수록 더 보여준다.
 
 ## 참고
 
+- 표·메시지 언어는 `$LANG` 을 따른다(`ko` 로 시작하면 한국어). `CSM_LANG=en|ko` 로 강제.
 - `◆ ▶ · …` 같은 ambiguous 글자는 기본 2칸으로 센다(iTerm2 의
   *Treat ambiguous-width characters as double-width* 기준). 1칸으로 그리는 터미널이면
   `CSM_AMBIWIDTH=1`.

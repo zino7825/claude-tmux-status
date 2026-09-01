@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""csm — Claude 세션 ↔ tmux. 훅과 CLI 가 한 파일이다.
+"""csm — Claude Code session status in tmux. Hook and CLI in one file.
 
-    csm                 상태 표
-    csm jump <N>        해당 세션의 창으로 이동
-    csm next            내 차례인 창(! → ? → ✓ 순)으로 이동
-    csm watch           2초마다 갱신. 숫자키로 점프, q 로 종료
-    csm hook <event>    Claude Code 훅 (payload 는 stdin JSON)
-    csm sweep           집계만 다시 (tmux status-interval 이 부른다)
-    csm tmux-conf       ~/.tmux.conf 에 붙일 블록 출력
-    csm install         훅 등록 + ~/.local/bin/csm 심링크 + tmux.conf 블록
-    csm install --check 설치 상태만 확인
+    csm                 the table
+    csm jump <N>        jump to that session's window
+    csm next            jump to the window that needs you (! -> ? -> v)
+    csm watch           refresh every 2s; digits jump, q quits
+    csm hook <event>    Claude Code hook (payload is JSON on stdin)
+    csm sweep           recompute only (called by tmux status-interval)
+    csm tmux-conf       print the block for ~/.tmux.conf
+    csm install         hooks + ~/.local/bin/csm symlink + tmux.conf block
+    csm install --check report what is missing, change nothing
 
-훅과 표가 같은 규칙(상태 판정·claude pane 탐지·정리)을 쓰기 때문에 한 파일이다.
-bash + jq 로 나뉘어 있던 시절에는 같은 규칙을 두 언어로 두 번 적었고, 한쪽만
-고치면 조용히 어긋났다. 의존성도 python3 하나로 줄었다(jq/awk 불필요).
+Hook and table share every rule (state machine, claude-pane detection, pruning),
+so they live in one file. When the hook was bash+jq and the table was python, the
+same rules were written twice and drifted whenever only one side was changed.
 
-window 이름:  ◆<label><glyph>[<도구수>][⚙<에이전트수>][·<경과>]
-  · 시작   ▶ 작업중   ! 응답 대기   ? 확인 필요(오래 조용함)   ✓ 완료
+Window name:  ◆<label><glyph>[<tools>][⚙<agents>][·<elapsed>]
+  glyphs: · start   ▶ working   ! waiting for you   ? quiet too long   ✓ done
+
+Output language follows $LANG (Korean when it starts with "ko"); CSM_LANG=ko|en
+overrides it.
 """
 import json, os, select, shutil, subprocess, sys, termios, time, tty
 
@@ -25,27 +28,51 @@ HOME = os.path.expanduser("~")
 SELF = os.path.realpath(__file__)
 MARK = "◆"
 SHELLS = {"zsh", "bash", "sh", "fish", "tcsh", "ksh", "dash"}
-STALL = 180          # 실행 중인 도구도 없이 이만큼 조용한 working 은 믿지 않는다
-SWEEP_GAP = 5        # sweep 재진입 방지 (status-interval 이 클라이언트마다 부른다)
+STALL = 180          # a "working" session this quiet, with no tool in flight, is not believed
+SWEEP_GAP = 5        # re-entry guard (status-interval fires once per attached client)
 
-GLYPH = {"working": "▶ 작업중", "done": "✓ 완료", "input": "! 응답대기",
-         "stall": "? 확인필요", "start": "· 시작", "unknown": "· 상태없음"}
+# Output language: $LANG decides, CSM_LANG overrides. Keep both tables in step with
+# the bash edition - compat-test.sh compares the rendered tables byte for byte.
+_LANG = (os.environ.get("CSM_LANG")
+         or ("ko" if (os.environ.get("LANG") or "").lower().startswith("ko") else "en"))
+_TXT = {
+    "en": {"working": "▶ working", "done": "✓ done", "input": "! waiting",
+           "stall": "? quiet", "start": "· start", "unknown": "· unknown",
+           "hdr": ["#", "state", "window", "tmux", "progress", "last", "cwd", "task"],
+           "none": "No Claude session is running.", "sec": "s ago", "min": "m ago",
+           "hour": "h ago", "day": "d ago", "mine": "your turn", "workn": "working",
+           "unk": "no state yet", "hint": "   —   csm jump <#> / csm next",
+           "keys": "1-9 jump · q close", "nosess": "No session is waiting for you.",
+           "nonum": "no such row: ", "usage_jump": "usage: csm jump <row>"},
+    "ko": {"working": "▶ 작업중", "done": "✓ 완료", "input": "! 응답대기",
+           "stall": "? 확인필요", "start": "· 시작", "unknown": "· 상태없음",
+           "hdr": ["#", "상태", "window", "tmux", "진행", "마지막", "cwd", "작업"],
+           "none": "실행 중인 Claude 세션이 없습니다.", "sec": "초 전", "min": "분 전",
+           "hour": "시간 전", "day": "일 전", "mine": "내 차례", "workn": "작업중",
+           "unk": "상태없음", "hint": "   —   csm jump <#> / csm next 로 이동",
+           "keys": "1-9 이동 · q 닫기", "nosess": "내 차례인 세션이 없습니다.",
+           "nonum": "그런 번호가 없습니다: ", "usage_jump": "사용: csm jump <번호>"},
+}
+TXT = _TXT.get(_LANG, _TXT["en"])
+TXT.setdefault("none", _TXT["en"]["none"])
+GLYPH = {k: TXT[k] for k in ("working", "done", "input", "stall", "start", "unknown")}
 MARKS = {"working": "▶", "done": "✓", "input": "!", "stall": "?",
          "start": "·", "unknown": "·"}
 PRIO = {"input": 4, "stall": 3, "done": 2, "working": 1, "start": 0, "unknown": -1}
-# 상태색. 표는 눈으로 훑는 물건이라 색이 없으면 줄을 세어야 한다.
+# State colours. The table is scanned by eye; without colour you end up counting rows.
 SGR = {"input": "\033[1;91m", "stall": "\033[1;93m", "done": "\033[1;92m",
        "working": "\033[96m", "start": "\033[37m", "unknown": "\033[90m"}
 BOLD, DIM, RST = "\033[1m", "\033[2m", "\033[0m"
 
-# ◆ ▶ · … 같은 글자는 유니코드상 "ambiguous" 라 터미널마다 1칸/2칸이 갈린다.
-# 기본은 2칸 — iTerm2 의 "Treat ambiguous-width characters as double-width" 기준.
-# 1칸으로 그리는 터미널이면 CSM_AMBIWIDTH=1 로 되돌린다.
+# Glyphs like the diamond/triangle/middle-dot are "ambiguous width" in Unicode, so
+# terminals draw them 1 or 2 columns wide. Default is 2, matching iTerm2's
+# "Treat ambiguous-width characters as double-width". Set CSM_AMBIWIDTH=1 otherwise.
 AMBI = 1 if os.environ.get("CSM_AMBIWIDTH") == "1" else 2
 
-# 폭 표는 bash 판(csm.sh)의 awk 함수와 **같은 값**이어야 한다. unicodedata 를 쓰면
-# bash 쪽에서 같은 답을 낼 수 없어(EastAsianWidth 표가 5KB 다) 필요한 구간만 추린다.
-# ✓(U+2713) ⚙(U+2699) 은 Neutral 이라 1 칸이다 — ambiguous 로 넣으면 표가 어긋난다.
+# This width table must match the awk function in the bash edition exactly. Using
+# unicodedata here would be unmatchable there (the EastAsianWidth table is ~5KB), so
+# both sides carry the same trimmed ranges. U+2713 and U+2699 are Neutral = 1 column;
+# treating them as ambiguous shifts the two editions apart by one column.
 WIDE = ((0x1100, 0x115F), (0x2E80, 0x303E), (0x3041, 0x33FF), (0x3400, 0x4DBF),
         (0x4E00, 0x9FFF), (0xA000, 0xA4CF), (0xAC00, 0xD7A3), (0xF900, 0xFAFF),
         (0xFE30, 0xFE6F), (0xFF00, 0xFF60), (0xFFE0, 0xFFE6), (0x1F300, 0x1FAFF),
@@ -95,7 +122,7 @@ PANE_FMT = ("#{pane_id}\t#{window_id}\t#{window_index}\t#{pane_current_command}"
 
 
 def panes():
-    """살아있는 pane: id -> dict. tmux 호출 한 번으로 필요한 걸 다 받는다."""
+    """Live panes: id -> dict. One tmux call gets everything we need."""
     out = tmux("list-panes", "-a", "-F", PANE_FMT)
     live = {}
     for line in (out or "").splitlines():
@@ -107,19 +134,20 @@ def panes():
 
 
 def socket_path():
-    """지금 붙어 있는 tmux 서버의 소켓. 캐시는 서버마다 따로다."""
+    """Socket of the tmux server we are talking to. The cache is per server."""
     out = tmux("display-message", "-p", "#{socket_path}")
     return (out or "").strip() or os.environ.get("TMUX", "").split(",")[0]
 
 
 def claude_panes(live, skip=()):
-    """claude 프로세스가 살아 있는 pane 집합.
+    """Panes with a live claude process.
 
-    캐시(훅이 남기는 파일)가 없어도 잡아야 한다 — 훅을 달기 전에 띄운 세션,
-    캐시가 지워진 뒤 아직 아무 턴도 안 돈 세션은 캐시만 보면 통째로 안 보인다.
-    ps 한 번으로 트리를 만들고 pane 프로세스의 자손에서 claude 를 찾는다.
-    이미 캐시가 있는 pane 은 볼 필요가 없다 — 평소에는 후보가 없어 ps 를 아예 안 부른다
-    (훅은 이벤트마다 sweep 을 돌리므로 여기서 아끼는 게 그대로 훅 지연이 된다).
+    These must be found even without a cache file: sessions started before the hooks
+    were installed, or after the cache was cleared, are invisible if you only read the
+    cache. One ps call builds the tree; we look for claude below each pane process.
+    Panes that already have a cache entry are skipped, so normally there are no
+    candidates and ps is never called (the hook sweeps on every event, so what is
+    saved here is hook latency).
     """
     cand = [p for p, m in live.items() if m["cmd"] not in SHELLS and p not in skip]
     if not cand:
@@ -138,7 +166,7 @@ def claude_panes(live, skip=()):
 
     def is_claude(a):
         exe = a.split()[0] if a.split() else ""
-        # /Applications/Claude.app (데스크탑 앱) 은 세션이 아니다
+        # the Claude desktop app is not a session
         return (exe.endswith("/claude") or exe == "claude") and not exe.startswith("/Applications/")
 
     found = set()
@@ -156,7 +184,7 @@ def claude_panes(live, skip=()):
     return found
 
 
-# ── 상태 캐시 ────────────────────────────────────────────────────────────
+# ── state cache ────────────────────────────────────────────────────────────
 def cache_path(pane):
     return os.path.join(CACHE, pane.lstrip("%") + ".json")
 
@@ -178,11 +206,11 @@ def write_state(pane, st):
 
 
 def collect(prune=True, live=None):
-    """캐시 + 살아 있는 claude pane → 표에 쓸 행 목록."""
+    """Cache + live claude panes -> rows for the table."""
     if live is None:
         live = panes()
     mysock = socket_path()
-    if not live:                      # tmux 를 못 부르면 "다 죽었다"고 볼 수 없다
+    if not live:                      # no tmux answer is not proof that everything died
         prune = False
     rows = []
     for fn in sorted(os.listdir(CACHE)) if os.path.isdir(CACHE) else []:
@@ -193,15 +221,15 @@ def collect(prune=True, live=None):
         st = read_state(path)
         if st is None:
             continue
-        if pane not in live:
-            # 다른 tmux 서버가 쓴 항목이면 남의 것이다. 지우지 말 것 —
-            # (두 번째 서버에서 csm 을 돌렸다가 진짜 세션 상태를 통째로 날린 적이 있다)
+        if pane not in live:          # not a pane of this server
+            # Written by another tmux server: not ours to delete. (Running csm from a
+            # second server once wiped every real session's state.)
             if prune and st.get("socket") and st["socket"] == mysock:
                 try: os.unlink(path)
                 except OSError: pass
             continue
         m = live[pane]
-        if m["cmd"] in SHELLS:                     # claude 는 종료됨
+        if m["cmd"] in SHELLS:                     # claude exited, shell is back
             if prune:
                 try: os.unlink(path)
                 except OSError: pass
@@ -222,7 +250,7 @@ def collect(prune=True, live=None):
             "sid": st.get("session_id") or "", "task": (st.get("task") or "").strip(),
         })
 
-    # 캐시가 없는 claude pane — 훅이 아직 한 번도 안 돈 세션. 상태만 모를 뿐 살아있다.
+    # Live claude panes with no cache yet: state unknown, session very much alive.
     seen = {r["pane"] for r in rows}
     for pane in claude_panes(live, skip=seen):
         m = live[pane]
@@ -240,16 +268,16 @@ def collect(prune=True, live=None):
     return rows
 
 
-# ── 표 ──────────────────────────────────────────────────────────────────
+# ── table ──────────────────────────────────────────────────────────────────
 def ago(sec):
     d = max(0, int(time.time()) - int(sec))
     if d < 60:
-        return f"{d}초 전"
+        return f"{d}{TXT['sec']}"
     if d < 3600:
-        return f"{d // 60}분 전"
+        return f"{d // 60}{TXT['min']}"
     if d < 86400:
-        return f"{d // 3600}시간 전"
-    return f"{d // 86400}일 전"
+        return f"{d // 3600}{TXT['hour']}"
+    return f"{d // 86400}{TXT['day']}"
 
 
 def dur(sec):
@@ -262,7 +290,7 @@ def dur(sec):
 
 
 def short(sec):
-    """창 이름에 붙일 경과. 60초 미만은 빈 문자열."""
+    """Elapsed time for the window name. Empty below a minute."""
     d = max(0, int(sec))
     if d < 60:
         return ""
@@ -280,7 +308,7 @@ def pad(s, n):
 
 
 def clip(s, n):
-    """표시 폭 기준으로 자르고 … 을 붙인다."""
+    """Clip to a display width and append an ellipsis."""
     if n <= 0 or width(s) <= n:
         return s
     out, w = "", 0
@@ -298,8 +326,8 @@ def render(rows, color=None):
     paint = (lambda t, c: f"{c}{t}{RST}") if color else (lambda t, c: t)
 
     if not rows:
-        return "실행 중인 Claude 세션이 없습니다.\n"
-    hdr = ["#", "상태", "window", "tmux", "진행", "마지막", "cwd", "작업"]
+        return TXT["none"] + "\n"
+    hdr = list(TXT["hdr"])
     body = []
     for r in rows:
         if r["state"] in ("working", "stall"):
@@ -317,7 +345,7 @@ def render(rows, color=None):
                      ago(r["ts"]) if r["ts"] else "-",
                      r["cwd"], r["task"] or "-"])
     cols = [max(width(row[i]) for row in [hdr] + body) for i in range(len(hdr))]
-    # 작업 열은 남는 폭만큼만. 프롬프트는 길어서 안 자르면 표가 접힌다.
+    # The task column gets whatever width is left; prompts are long enough to wrap the table.
     term = max(shutil.get_terminal_size((120, 24)).columns or 120, 60)
     room = term - (sum(cols[:-1]) + 2 * len(cols) - 2) - 1
     cols[-1] = max(10, min(cols[-1], room))
@@ -329,18 +357,19 @@ def render(rows, color=None):
     for r, row in zip(rows, body):
         cells = [pad(c, w) for c, w in zip(row, cols)]
         c = SGR.get(r["state"], "")
-        cells[0] = paint(cells[0], DIM)          # 번호
-        cells[1] = paint(cells[1], c)            # 상태
-        cells[2] = paint(cells[2], c)            # window — 상태색을 같이 입어야 눈에 띈다
-        cells[-1] = paint(cells[-1], DIM)        # 작업(프롬프트)
+        cells[0] = paint(cells[0], DIM)          # row number
+        cells[1] = paint(cells[1], c)            # state
+        cells[2] = paint(cells[2], c)            # window - same colour or it does not catch the eye
+        cells[-1] = paint(cells[-1], DIM)        # task (the prompt)
         out.append("  ".join(cells).rstrip())
 
     mine = [r for r in rows if r["state"] in ("input", "done", "stall")]
     unknown = sum(1 for r in rows if r["state"] == "unknown")
     out.append("")
-    out.append(f"내 차례 {len(mine)}개 · 작업중 {sum(1 for r in rows if r['state'] == 'working')}개"
-               + (f" · 상태없음 {unknown}개(훅 기록 전)" if unknown else "")
-               + paint("   —   csm jump <#> / csm next 로 이동", DIM))
+    out.append(f"{TXT['mine']}: {len(mine)} · {TXT['workn']}: "
+               f"{sum(1 for r in rows if r['state'] == 'working')}"
+               + (f" · {TXT['unk']}: {unknown}" if unknown else "")
+               + paint(TXT["hint"], DIM))
     return "\n".join(out) + "\n"
 
 
@@ -353,7 +382,7 @@ def goto(rows, n):
     return False
 
 
-# ── 창 이름 · 탭 색 ──────────────────────────────────────────────────────
+# ── window names and tab colours ──────────────────────────────────────────────────────
 def strip_glyphs(name):
     n = name[len(MARK):] if name.startswith(MARK) else name
     n = n.split("×", 1)[0]
@@ -363,7 +392,7 @@ def strip_glyphs(name):
 
 
 def update_windows(rows, live):
-    """window 이름과 @claude_state 를 지금 상태에 맞춘다. 사람이 붙인 이름은 살린다."""
+    """Bring window names and @claude_state up to date. Names you chose are kept."""
     by_win = {}
     for r in rows:
         by_win.setdefault(r["win"], []).append(r)
@@ -372,7 +401,7 @@ def update_windows(rows, live):
         meta = next(m for m in live.values() if m["win"] == win)
         mine = by_win.get(win)
         if not mine:
-            # claude pane 이 남아있지 않다 → 원래 이름 복구
+            # no claude pane left -> restore the original name
             if meta["label"] or meta["wstate"]:
                 tmux("set-option", "-w", "-t", win, "-u", "@claude_label")
                 tmux("set-option", "-w", "-t", win, "-u", "@claude_state")
@@ -424,10 +453,11 @@ def summary(rows):
 
 
 def sweep(force=False):
-    """집계 + 창 이름 갱신. status-interval 이 클라이언트마다 부르므로 재진입을 막는다.
+    """Recompute and refresh window names. status-interval fires once per client, so
+    re-entry is guarded.
 
-    재진입 스탬프와 요약은 **서버마다** 따로 둔다. 한 파일을 공유하면 두 번째
-    tmux 서버의 sweep 이 진짜 서버의 요약을 덮어써서 엉뚱한 숫자가 뜬다.
+    The stamp and the summary are per server: sharing one file lets a second tmux
+    server's sweep overwrite the real server's summary with someone else's numbers.
     """
     os.makedirs(CACHE, exist_ok=True)
     tag = os.path.basename(socket_path() or "default") or "default"
@@ -457,13 +487,14 @@ def sweep(force=False):
     return s
 
 
-# ── 훅 ──────────────────────────────────────────────────────────────────
+# ── hook ──────────────────────────────────────────────────────────────────
 def advance(prev):
-    """완료 이벤트(PostToolUse/SubagentStop)가 상태를 어디로 옮길지.
+    """Where a completion event (PostToolUse / SubagentStop) moves the state.
 
-    이들은 "이미 끝난 일"의 뒤처리라 Stop 뒤에 늦게 도착할 수 있다 →
-    끝난 턴을 되살리지 않는다. (SubagentStop 이 Stop 뒤에 와서 완료된 창이
-    ▶ 로 남던 버그). 반대로 PreToolUse 는 "지금 시작한 일"이라 되살아나도 된다.
+    These are the tail end of work that already finished and can arrive after Stop,
+    so they must not resurrect a finished turn (a SubagentStop landing after Stop used
+    to leave a done window stuck at "working"). PreToolUse is work that is starting,
+    so that one is allowed to revive.
     """
     return "done" if prev == "done" else "working"
 
@@ -471,7 +502,7 @@ def advance(prev):
 def hook(event):
     pane = os.environ.get("TMUX_PANE")
     if not pane or not have_tmux():
-        return 0                      # tmux 밖이면 조용히 통과 — 훅이 턴을 실패시키지 않는다
+        return 0                      # outside tmux: pass quietly, a hook must not fail the turn
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except Exception:
@@ -497,22 +528,22 @@ def hook(event):
     }
     tool = payload.get("tool_name") or ""
 
-    if event in ("start", "working"):          # 새 턴 — 여기서만 done → working
+    if event in ("start", "working"):          # new turn - the only done -> working transition
         st.update(state="working", turn_ts=now, tools=0, agents=0, agents_done=0,
                   pre=0, post=0, tool="")
-        # 이번 턴에 뭘 시키는지 = 사용자 프롬프트 한 줄. 표의 "작업" 열이 이걸 본다.
+        # what this turn was asked to do = one line of the prompt; the task column shows it
         prompt = " ".join((payload.get("prompt") or "").split())
         if prompt:
             st["task"] = prompt[:120]
-    elif event == "tool":                      # PreToolUse — 지금 실제로 일하고 있다
-        if st["state"] == "done":              # 프롬프트 없이 시작되는 턴도 있다
+    elif event == "tool":                      # PreToolUse - actually working right now
+        if st["state"] == "done":              # some turns start without a prompt event
             st.update(turn_ts=now, tools=0, agents=0, agents_done=0, pre=0, post=0)
         st["pre"] += 1
         st["tools"] += 1
         st["tool"] = tool
         if tool in ("Task", "Agent"):
             st["agents"] += 1
-        # 사용자 응답을 반드시 기다리는 도구는 바로 ! 로 올린다
+        # tools that always wait for a human go straight to "waiting"
         st["state"] = "input" if tool in ("AskUserQuestion", "ExitPlanMode") else "working"
         if not st["turn_ts"]:
             st["turn_ts"] = now
@@ -527,8 +558,9 @@ def hook(event):
     elif event == "done":                      # Stop
         st["state"] = "done"
     elif event == "input":                     # Notification
-        # 권한/승인 요청만 ! 로 올린다. 60초 idle 알림은 상태를 바꾸지 않는다
+        # only permission/approval prompts count; the 60s idle notice changes nothing
         msg = (payload.get("message") or "").lower()
+        # Korean strings kept: Claude Code localises this notification.
         keys = ("ermission", "pprove", "confirm", "권한", "승인")
         st["state"] = "input" if any(k.lower() in msg for k in keys) else (prev.get("state") or "done")
     elif event == "end":                       # SessionEnd
@@ -540,18 +572,18 @@ def hook(event):
         return 0
 
     write_state(pane, st)
-    sweep(force=True)                          # 창 이름·탭 색을 바로 반영
+    sweep(force=True)                          # reflect it in names and tab colours now
     return 0
 
 
-# ── tmux.conf 블록 ───────────────────────────────────────────────────────
+# ── tmux.conf block ───────────────────────────────────────────────────────
 BEGIN, END = "# >>> csm >>>", "# <<< csm <<<"
-# 예전 이름. 남의 conf 에 이미 박혀 있을 수 있어 설치할 때 같이 걷어낸다.
+# Older marker name; installs clean it out of confs that still carry it.
 OLD_BEGIN, OLD_END = "# >>> claude-agents tmux-state >>>", "# <<< claude-agents tmux-state <<<"
 
 
 def splice(body, block):
-    """마커 사이만 갈아끼운다. 옛 마커 블록이 있으면 그것도 걷어낸다."""
+    """Replace only the marked region, dropping an old-marker block if present."""
     for b, e in ((OLD_BEGIN, OLD_END), (BEGIN, END)):
         if b in body and e in body:
             head, rest = body.split(b, 1)
@@ -561,29 +593,30 @@ def splice(body, block):
 
 
 def tmux_conf(ver=None):
-    """붙여 넣을 블록. tmux 버전에 맞춰 되는 것만 넣는다."""
+    """The block to paste into ~/.tmux.conf, trimmed to what this tmux can do."""
     ver = ver or tmux_version() or (99, 0)
     csm = SELF
     L = [BEGIN,
-         "# csm 이 만든 블록이다. 직접 고치지 말고 `csm tmux-conf` 를 다시 받아라.",
+         "# Written by csm. Do not edit here - re-run `csm tmux-conf` instead.",
          "#",
-         "# 오른쪽에 전체 요약(! 응답대기 / ? 확인필요 / ✓ 완료 / ▶ 작업중 / · 상태없음).",
-         "# status-interval 마다 sweep 이 돌아 창 이름의 경과시간·? 판정도 같이 갱신된다.",
+         "# status-right shows the totals (! waiting / ? quiet / ✓ done / ▶ working / · unknown).",
+         "# The sweep also refreshes elapsed times and the quiet-too-long check.",
          "set -g status-interval 5",
          f"set -g status-right '#[fg=colour39]#({csm} sweep)#[fg=white] %H:%M %d-%b-%y'"]
     if ver >= (3, 1):
         L += ["",
-              "# 상태별 탭 배경색. @claude_state 는 csm 이 window 옵션으로 세팅한다.",
-              "#   ! red / ? yellow / ✓ green / · gray(상태없음) / ▶·claude 없음 = 원래색",
-              "# 현재 창은 window-status-current-format 이 따로 처리한다(\"지금 여기\"를 잃지 않게).",
+              "# Tab colour per state. csm sets @claude_state as a window option.",
+              "#   ! red / ? yellow / ✓ green / · grey (unknown) / ▶ and no-claude keep their colour",
+              "# The current window is left to window-status-current-format so you never lose",
+              "# track of where you are.",
               'set -g window-status-format "#{?#{==:#{@claude_state},input},'
               '#[fg=colour231#,bg=colour160#,bold],#{?#{==:#{@claude_state},stall},'
               '#[fg=colour232#,bg=colour214#,bold],#{?#{==:#{@claude_state},done},'
               '#[fg=colour232#,bg=colour35#,bold],#{?#{==:#{@claude_state},unknown},'
               '#[fg=colour250#,bg=colour240],#[fg=white#,bg=colour234]}}}}#I.#W"']
     else:
-        L += ["", "# 탭 색은 #{==:...} 가 필요해 tmux 3.1+ 에서만 된다. 창 이름 글리프로 대신한다."]
-    L += ["", "# C-a L → csm 을 화면 위에. 숫자키로 이동, q 로 닫기."]
+        L += ["", "# Tab colours need #{==:...}, which is tmux 3.1+. Window-name glyphs stand in below that."]
+    L += ["", "# C-a L pops csm up over the screen. Digits jump, q closes."]
     if ver >= (3, 2):
         L += ["unbind L", f'bind-key L display-popup -E -w 90% -h 80% "{csm} watch"']
     else:
@@ -592,7 +625,7 @@ def tmux_conf(ver=None):
     return "\n".join(L) + "\n"
 
 
-# ── 설치 ────────────────────────────────────────────────────────────────
+# ── install ────────────────────────────────────────────────────────────────
 HOOKS = [("SessionStart", "start"), ("UserPromptSubmit", "working"),
          ("PreToolUse", "tool"), ("PostToolUse", "tooldone"),
          ("SubagentStop", "agent"), ("Notification", "input"),
@@ -605,30 +638,30 @@ def install(check=False):
     bad = []
     os.chmod(SELF, 0o755)
 
-    # 1) ~/.local/bin/csm 심링크
+    # 1) ~/.local/bin/csm symlink
     bindir = os.path.join(HOME, ".local", "bin")
     link = os.path.join(bindir, "csm")
     cur = os.path.realpath(link) if os.path.lexists(link) else None
     if cur == SELF:
-        print(OK, "csm — 이미 연결됨")
+        print(OK, "csm — already linked")
     elif check:
-        print(WARN, "csm 심링크 없음"); bad.append("csm")
+        print(WARN, "csm symlink missing"); bad.append("csm")
     else:
         os.makedirs(bindir, exist_ok=True)
         if os.path.lexists(link):
             os.unlink(link)
         os.symlink(SELF, link)
-        print(OK, f"csm → {link} 심링크 {'교체' if cur else '생성'}")
+        print(OK, f"csm — symlink {'replaced' if cur else 'created'}: {link}")
     if bindir not in os.environ.get("PATH", "").split(os.pathsep):
-        print(WARN, f"PATH 에 {bindir} 가 없다 — 셸 설정에 넣어라")
+        print(WARN, f"{bindir} is not on PATH — add it in your shell config")
 
-    # 2) 훅 등록. csm 을 부르는 항목만 손대고 나머지는 그대로 둔다.
+    # 2) hooks. Only entries that call csm are touched; everything else is left alone.
     data = {}
     if os.path.exists(SETTINGS):
         try:
             data = json.load(open(SETTINGS))
         except Exception as e:
-            print(FAIL, f"settings.json 파싱 실패 — 훅 등록 중단: {e}")
+            print(FAIL, f"settings.json is not valid JSON — hooks not registered: {e}")
             return 1
     hooks = data.setdefault("hooks", {})
     changed = []
@@ -649,47 +682,47 @@ def install(check=False):
             groups.append({"hooks": [{"type": "command", "command": want, "async": True}]})
             changed.append(event)
     if not changed:
-        print(OK, "settings.json 훅 — 이미 최신")
+        print(OK, "settings.json hooks — up to date")
     elif check:
-        print(WARN, f"훅 미등록/불일치: {', '.join(sorted(set(changed)))}"); bad.append("hooks")
+        print(WARN, f"hooks missing or stale: {', '.join(sorted(set(changed)))}"); bad.append("hooks")
     else:
         os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
         with open(SETTINGS, "w") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
         os.chmod(SETTINGS, 0o600)
-        print(OK, f"settings.json 훅 — {', '.join(sorted(set(changed)))} 등록")
+        print(OK, f"settings.json hooks — registered: {', '.join(sorted(set(changed)))}")
 
-    # 3) ~/.tmux.conf 블록. 마커 사이만 교체하므로 사용자 설정을 건드리지 않는다.
+    # 3) ~/.tmux.conf block. Only the marked region is replaced, never your own config.
     conf = os.path.join(HOME, ".tmux.conf")
     block = tmux_conf().rstrip("\n")
     body = open(conf).read() if os.path.exists(conf) else ""
     new = splice(body, block)
     if new == body:
-        print(OK, ".tmux.conf — 이미 최신")
+        print(OK, ".tmux.conf — up to date")
     elif check:
-        print(WARN, ".tmux.conf 블록 미반영"); bad.append(".tmux.conf")
+        print(WARN, ".tmux.conf block not applied"); bad.append(".tmux.conf")
     else:
-        if body:                       # 스플라이스가 잘못돼도 되돌릴 게 있어야 한다
+        if body:                       # keep something to restore if the splice goes wrong
             with open(conf + ".csm-bak", "w") as fh:
                 fh.write(body)
         with open(conf, "w") as fh:
             fh.write(new)
-        print(OK, ".tmux.conf — 블록 반영" + (f" (이전 파일은 {conf}.csm-bak)" if body else ""))
+        print(OK, ".tmux.conf — block applied" + (f" (previous file: {conf}.csm-bak)" if body else ""))
         if os.environ.get("TMUX") or (tmux("has-session") is not None):
             tmux("source-file", conf)
-            print(OK, "tmux 설정 리로드")
+            print(OK, "tmux config reloaded")
 
     if bad:
-        print(FAIL, "미설치:", ", ".join(bad))
+        print(FAIL, "not installed:", ", ".join(bad))
         return 1
-    print(OK, "완료. 새 Claude 세션부터 상태가 잡힌다.")
+    print(OK, "done — new Claude sessions will report their state.")
     return 0
 
 
-# ── 진입점 ──────────────────────────────────────────────────────────────
+# ── entry point ──────────────────────────────────────────────────────────────
 def watch():
-    if not sys.stdout.isatty():          # claude 의 Bash 툴 등 — 무한 루프 금지
+    if not sys.stdout.isatty():          # piped (e.g. a Bash tool call): never loop forever
         sys.stdout.write(render(collect()))
         return 0
     fd = sys.stdin.fileno() if sys.stdin.isatty() else None
@@ -699,7 +732,7 @@ def watch():
             tty.setcbreak(fd)
         while True:
             rows = collect()
-            sys.stdout.write("\033[H\033[2J" + render(rows) + "\n1-9 이동 · q 닫기\n")
+            sys.stdout.write("\033[H\033[2J" + render(rows) + "\n" + TXT["keys"] + "\n")
             sys.stdout.flush()
             if fd is None:
                 time.sleep(2)
@@ -710,7 +743,7 @@ def watch():
             if ch in ("q", "Q", "\x1b", "\x03"):
                 break
             if ch.isdigit() and ch != "0" and goto(rows, int(ch)):
-                break                     # 이동했으면 닫는다 (popup 이면 그대로 사라진다)
+                break                     # jumped: close (a popup just disappears)
     except KeyboardInterrupt:
         pass
     finally:
@@ -725,22 +758,22 @@ def main(argv):
         sys.stdout.write(render(collect()))
     elif cmd == "jump":
         if len(argv) < 3 or not argv[2].isdigit():
-            sys.exit("사용: csm jump <번호>")
+            sys.exit(TXT["usage_jump"])
         if not goto(collect(), int(argv[2])):
-            sys.exit(f"그런 번호가 없습니다: {argv[2]}")
+            sys.exit(TXT["nonum"] + argv[2])
     elif cmd == "next":
         rows = collect()
         pick = next((r for r in rows if r["state"] == "input"), None) \
             or next((r for r in rows if r["state"] == "stall"), None) \
             or next((r for r in rows if r["state"] == "done"), None)
         if not pick:
-            sys.exit("내 차례인 세션이 없습니다.")
+            sys.exit(TXT["nosess"])
         goto(rows, pick["n"])
     elif cmd == "watch":
         return watch()
     elif cmd == "hook":
         if len(argv) < 3:
-            sys.exit("사용: csm hook <start|working|tool|tooldone|agent|input|done|end>")
+            sys.exit("usage: csm hook <start|working|tool|tooldone|agent|input|done|end>")
         return hook(argv[2])
     elif cmd == "sweep":
         if not have_tmux():
@@ -753,7 +786,7 @@ def main(argv):
     elif cmd in ("-h", "--help", "help"):
         sys.stdout.write(__doc__)
     else:
-        sys.exit("사용: csm [list|jump <#>|next|watch|hook <event>|sweep|tmux-conf|install]")
+        sys.exit("usage: csm [list|jump <#>|next|watch|hook <event>|sweep|tmux-conf|install]")
     return 0
 
 
@@ -762,7 +795,7 @@ if __name__ == "__main__":
         sys.exit(main(sys.argv))
     except BrokenPipeError:
         pass
-    except Exception as e:                     # 훅이 턴을 실패시키면 안 된다
+    except Exception as e:                     # a hook must never fail the turn
         if len(sys.argv) > 1 and sys.argv[1] in ("hook", "sweep"):
             sys.exit(0)
         raise SystemExit(f"csm: {e}")

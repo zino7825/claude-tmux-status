@@ -116,6 +116,8 @@ Works from tmux 1.8. Newer versions get more:
 
 ## Notes
 
+- Output language follows `$LANG` (Korean when it starts with `ko`), and `CSM_LANG=en|ko`
+  overrides it. Code comments and the generated tmux block are English.
 - Ambiguous-width glyphs (`◆ ▶ · …`) are counted as 2 columns by default, matching
   iTerm2's *Treat ambiguous-width characters as double-width*. Set `CSM_AMBIWIDTH=1` if
   your terminal draws them narrow.
