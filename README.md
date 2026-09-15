@@ -1,31 +1,47 @@
-# csm — Claude Code session status in tmux
+<div align="center">
 
-> 한국어 설명은 [README.ko.md](README.ko.md).
+<img src="docs/banner.svg" alt="csm — Claude Code session status in tmux" width="880">
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![tmux 1.8+](https://img.shields.io/badge/tmux-1.8%2B-1bb91f)
+![no dependencies](https://img.shields.io/badge/deps-python3_or_bash%2Bjq-6b7280)
+![platform: macOS and Linux](https://img.shields.io/badge/platform-macOS_%7C_Linux-9ca3af)
+[![한국어](https://img.shields.io/badge/README-%ED%95%9C%EA%B5%AD%EC%96%B4-111827)](README.ko.md)
+
+</div>
 
 When you run several Claude Code sessions at once, the only question that matters is
 **which window is waiting for me?** `csm` answers it in two places: the tmux window name
 and tab colour, and a table you can pop up over your screen.
 
-```
-◆api▶12⚙1·3m    working (12 tool calls, 1 subagent, 3 min into the turn)
-◆web✓           done — your turn (tab turns green)
-◆infra!         waiting for permission (tab turns red)
-◆etl?           suspiciously quiet (tab turns yellow)
-```
-
-```
-$ csm
-#  state       window          tmux   progress        last     cwd              task
-─────────────────────────────────────────────────────────────────────────────────────────
-1  ! waiting   ◆infra!         2.%6   -               1m ago   ~/src/infra      deploy the canary
-2  ✓ done      ◆web✓           4.%33  -               12s ago  ~/src/web        fix the flaky test
-3  ▶ working   ◆api▶12⚙1·3m    5.%36  12 ⚙1 3m02s Bash 2s ago  ~/src/api        add the rate limiter
-
-your turn: 2 · working: 1   —   csm jump <#> / csm next
-```
+<div align="center">
+<img src="docs/popup.svg" alt="C-a L pops the session table up over the screen; the tab bar below is coloured by state" width="880">
+</div>
 
 `C-a L` opens that table in a popup (like the tmux clock on `C-a t`). Press a digit to jump
-to that session's window, `q` to close.
+to that session's window, `q` to close. Nothing polls Claude and nothing calls an API — the
+state comes from hooks Claude Code already fires, so a window costs you a glance, not a
+context switch.
+
+## The five states
+
+The tab bar alone is usually enough: three of the five states mean *your turn*, and each
+of those paints the tab.
+
+<div align="center">
+<img src="docs/tabs.svg" alt="tmux tab bar: red infra, green web, plain api, amber etl, grey ui" width="880">
+</div>
+
+| state | glyph | means | table | tab |
+|---|---|---|---|---|
+| waiting for you | `!` | a permission prompt, a question, a plan to approve | red | red |
+| suspiciously quiet | `?` | working, but nothing has happened for 3 minutes | yellow | yellow |
+| done — your turn | `✓` | the turn finished | green | green |
+| working | `▶` | tool calls in flight | cyan | unchanged |
+| running, no state yet | `·` | alive, but the hooks have not spoken | grey | grey |
+
+The window name carries the same thing plus the progress of the current turn —
+`◆api▶12⚙1·3m` is *api, working, 12 tool calls, 1 subagent, 3 minutes into the turn*.
 
 ## Install
 
@@ -57,20 +73,16 @@ csm jump 3       # jump to row 3
 csm watch        # refresh every 2s; digits jump, q quits (this is what C-a L runs)
 ```
 
+<div align="center">
+<img src="docs/table.svg" alt="csm printing the session table in a plain terminal" width="840">
+</div>
+
 ## How it works
 
 Claude Code fires hooks on session/turn/tool events. Each hook writes one JSON file per
 tmux pane under `~/.cache/claude-tmux/`, then re-renders every window name and tab colour.
 `status-right` runs `csm sweep` every 5 seconds so elapsed times and the "quiet too long"
 check stay fresh even when no session fires an event.
-
-| state | glyph | table | tab |
-|---|---|---|---|
-| waiting for you | `!` | red | red |
-| suspiciously quiet | `?` | yellow | yellow |
-| done — your turn | `✓` | green | green |
-| working | `▶` | cyan | unchanged |
-| running, no state recorded yet | `·` | grey | grey |
 
 A few decisions worth knowing:
 
@@ -123,6 +135,9 @@ Works from tmux 1.8. Newer versions get more:
   your terminal draws them narrow.
 - `NO_COLOR=1` (or piping) turns colour off.
 - `C-a L` replaces tmux's default `switch-client -l`; use `C-a (` / `C-a )` for that.
+- The pictures above are real captures, not mockups: `./docs/shots.sh` builds a throwaway
+  tmux server, fills it with one session per state, runs `csm` against it and turns the
+  terminal output into SVG.
 
 ## Uninstall
 

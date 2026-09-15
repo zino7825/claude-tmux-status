@@ -1,28 +1,44 @@
-# csm — Claude Code 세션 상태를 tmux 에
+<div align="center">
+
+<img src="docs/banner.ko.svg" alt="csm — Claude Code 세션 상태를 tmux 에" width="880">
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![tmux 1.8+](https://img.shields.io/badge/tmux-1.8%2B-1bb91f)
+![의존성 없음](https://img.shields.io/badge/deps-python3_or_bash%2Bjq-6b7280)
+![platform: macOS and Linux](https://img.shields.io/badge/platform-macOS_%7C_Linux-9ca3af)
+[![English](https://img.shields.io/badge/README-English-111827)](README.md)
+
+</div>
 
 여러 창에서 Claude Code 를 동시에 돌릴 때 궁금한 건 하나다. **어느 창이 내 차례인가.**
 `csm` 은 그걸 tmux 창 이름과 탭 색, 그리고 화면 위에 띄우는 표로 보여준다.
 
-```
-◆api▶12⚙1·3m    작업중 (도구 12회, 서브에이전트 1개, 이번 턴 3분째)
-◆web✓           완료 — 내 차례 (탭 초록)
-◆infra!         권한 대기 (탭 빨강)
-◆etl?           너무 조용함 — 확인 필요 (탭 노랑)
-```
-
-```
-$ csm
-#  상태       window          tmux   진행             마지막   cwd          작업
-──────────────────────────────────────────────────────────────────────────────────────
-1  ! 응답대기  ◆infra!         2.%6   -                1분 전   ~/src/infra  카나리 배포해줘
-2  ✓ 완료     ◆web✓           4.%33  -                12초 전  ~/src/web    깨지는 테스트 고쳐줘
-3  ▶ 작업중   ◆api▶12⚙1·3m    5.%36  12 ⚙1 3m02s Bash 2초 전   ~/src/api    레이트 리밋 추가해줘
-
-내 차례 2개 · 작업중 1개   —   csm jump <#> / csm next 로 이동
-```
+<div align="center">
+<img src="docs/popup.ko.svg" alt="C-a L 로 띄운 세션 표. 아래 탭 바는 상태별로 색이 칠해져 있다" width="880">
+</div>
 
 `C-a L` 을 누르면 시계(`C-a t`)처럼 이 표가 팝업으로 뜬다. 숫자키로 그 창으로 이동,
-`q` 로 닫는다.
+`q` 로 닫는다. Claude 를 폴링하지도, API 를 부르지도 않는다 — 상태는 Claude Code 가
+이미 쏘고 있는 훅에서 나온다. 그래서 창 하나 확인하는 데 드는 건 시선 한 번뿐이다.
+
+## 다섯 가지 상태
+
+대개는 탭 바만 봐도 끝난다. 다섯 중 셋이 "내 차례"이고, 그 셋은 전부 탭에 색이 칠해진다.
+
+<div align="center">
+<img src="docs/tabs.svg" alt="tmux 탭 바: infra 빨강, web 초록, api 기본색, etl 노랑, ui 회색" width="880">
+</div>
+
+| 상태 | 글리프 | 뜻 | 표 | 탭 |
+|---|---|---|---|---|
+| 응답 대기 | `!` | 권한 요청·질문·플랜 승인 | 빨강 | 빨강 |
+| 확인 필요 | `?` | 작업중인데 3분째 아무 일도 없다 | 노랑 | 노랑 |
+| 완료 — 내 차례 | `✓` | 턴이 끝났다 | 초록 | 초록 |
+| 작업중 | `▶` | 도구를 돌리고 있다 | 청록 | 원래색 |
+| 살아있지만 기록 없음 | `·` | 떠 있지만 훅이 아직 말을 안 했다 | 회색 | 회색 |
+
+창 이름에는 같은 내용에 이번 턴의 진행이 붙는다.
+`◆api▶12⚙1·3m` 은 *api, 작업중, 도구 12회, 서브에이전트 1개, 이번 턴 3분째*.
 
 ## 설치
 
@@ -54,20 +70,16 @@ csm jump 3       # 3번 줄로 이동
 csm watch        # 2초마다 갱신, 숫자키 이동, q 종료 (C-a L 이 이걸 띄운다)
 ```
 
+<div align="center">
+<img src="docs/table.ko.svg" alt="일반 터미널에서 csm 이 출력한 세션 표" width="840">
+</div>
+
 ## 어떻게 도는가
 
 Claude Code 는 세션·턴·도구 이벤트마다 훅을 부른다. 훅은 tmux pane 하나당 JSON 한 개를
 `~/.cache/claude-tmux/` 에 쓰고, 창 이름과 탭 색을 다시 칠한다. `status-right` 는 5초마다
 `csm sweep` 을 돌려, 아무 세션도 이벤트를 내지 않아도 경과시간과 "너무 조용함" 판정이
 갱신되게 한다.
-
-| 상태 | 글리프 | 표 | 탭 |
-|---|---|---|---|
-| 응답 대기 | `!` | 빨강 | 빨강 |
-| 확인 필요(오래 조용) | `?` | 노랑 | 노랑 |
-| 완료 — 내 차례 | `✓` | 초록 | 초록 |
-| 작업중 | `▶` | 청록 | 원래색 |
-| 살아있지만 기록 없음 | `·` | 회색 | 회색 |
 
 알아둘 만한 판단들:
 
@@ -117,6 +129,8 @@ tmux 1.8 부터 동작하고, 새 버전일수록 더 보여준다.
   `CSM_AMBIWIDTH=1`.
 - `NO_COLOR=1` 이거나 파이프로 넘기면 색을 뺀다.
 - `C-a L` 은 tmux 기본값 `switch-client -l` 을 대체한다. 직전 세션은 `C-a (` / `C-a )`.
+- 위 그림은 목업이 아니라 실제 캡처다. `./docs/shots.sh` 가 일회용 tmux 서버를 띄워
+  상태별 세션을 하나씩 채우고, 거기에 `csm` 을 돌려 나온 터미널 출력을 SVG 로 바꾼다.
 
 ## 지우기
 

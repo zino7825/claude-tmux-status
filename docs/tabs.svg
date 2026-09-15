@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1051" height="51" viewBox="0 0 1051 51" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Roboto Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="14.5">
+<rect width="1051" height="51" rx="10" fill="#15171c"/>
+<rect x="18.0" y="16.0" width="77.4" height="19.0" fill="#d70000"/>
+<rect x="95.4" y="16.0" width="8.6" height="19.0" fill="#1c1c1c"/>
+<rect x="104.0" y="16.0" width="60.2" height="19.0" fill="#00af5f"/>
+<rect x="164.2" y="16.0" width="8.6" height="19.0" fill="#1c1c1c"/>
+<rect x="172.8" y="16.0" width="120.4" height="19.0" fill="#1c1c1c"/>
+<rect x="293.2" y="16.0" width="8.6" height="19.0" fill="#1c1c1c"/>
+<rect x="301.8" y="16.0" width="60.2" height="19.0" fill="#ffaf00"/>
+<rect x="362.0" y="16.0" width="8.6" height="19.0" fill="#1c1c1c"/>
+<rect x="370.6" y="16.0" width="51.6" height="19.0" fill="#1c1c1c"/>
+<rect x="422.2" y="16.0" width="8.6" height="19.0" fill="#1c1c1c"/>
+<rect x="430.8" y="16.0" width="60.2" height="19.0" fill="#1c1c1c"/>
+<rect x="491.0" y="16.0" width="309.6" height="19.0" fill="#1c1c1c"/>
+<rect x="800.6" y="16.0" width="94.6" height="19.0" fill="#1c1c1c"/>
+<rect x="895.2" y="16.0" width="137.6" height="19.0" fill="#1c1c1c"/>
+<text x="18.0 26.6 35.2 43.8 52.4 61.0 69.6 78.2 86.8" y="29.5" xml:space="preserve" fill="#ffffff" font-weight="600">0.◆infra!</text>
+<text x="104.0 112.6 121.2 129.8 138.4 147.0 155.6" y="29.5" xml:space="preserve" fill="#080808" font-weight="600">1.◆web✓</text>
+<text x="172.8 181.4 190.0 198.6 207.2 215.8 224.4 233.0 241.6 250.2 258.8 267.4 276.0 284.6" y="29.5" xml:space="preserve" fill="#c9d1d9">2.◆api▶12⚙1·3m</text>
+<text x="301.8 310.4 319.0 327.6 336.2 344.8 353.4" y="29.5" xml:space="preserve" fill="#080808" font-weight="600">3.◆etl?</text>
+<text x="370.6 379.2 387.8 396.4 405.0 413.6" y="29.5" xml:space="preserve" fill="#c9d1d9">4.◆ui·</text>
+<text x="430.8 439.4 448.0 456.6 465.2 473.8 482.4" y="29.5" xml:space="preserve" fill="#ffffff" font-weight="600">5.notes</text>
+<text x="800.6 809.2 817.8 826.4 835.0 843.6 852.2 860.8 869.4 878.0 886.6" y="29.5" xml:space="preserve" fill="#00afff">!1 ?1 ✓1 ▶1</text>
+<text x="895.2 903.8 912.4 921.0 929.6 938.2 946.8 955.4 964.0 972.6 981.2 989.8 998.4 1007.0 1015.6 1024.2" y="29.5" xml:space="preserve" fill="#c9d1d9"> 11:57 15-Sep-26</text>
+</svg>

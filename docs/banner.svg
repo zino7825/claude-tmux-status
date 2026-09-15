@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="212" viewBox="0 0 1000 212" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Roboto Mono', Consolas, 'DejaVu Sans Mono', monospace">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14161b"/><stop offset="0.55" stop-color="#191d24"/><stop offset="1" stop-color="#121418"/></linearGradient></defs>
+<rect width="1000" height="212" rx="14" fill="url(#g)"/>
+<rect x="0.5" y="0.5" width="999" height="211" rx="13.5" fill="none" stroke="#262b34"/>
+<path d="M48 60 L60 48 L72 60 L60 72 Z" fill="#61afef"/>
+<text x="86" y="76" font-size="54" font-weight="700" fill="#e6edf3" letter-spacing="1">csm</text>
+<text x="88" y="108" font-size="19" fill="#c9d1d9">Claude Code session status in tmux</text>
+<text x="88" y="132" font-size="14" fill="#8b949e">which window is waiting for me — answered in the tab bar</text>
+<rect x="48.0" y="156" width="91.4" height="26" rx="4" fill="#d70000"/><text x="55.0" y="174" fill="#ffffff" font-size="14" font-weight="700" xml:space="preserve">0.◆infra!</text>
+<rect x="147.4" y="156" width="74.2" height="26" rx="4" fill="#00af5f"/><text x="154.4" y="174" fill="#121212" font-size="14" font-weight="700" xml:space="preserve">1.◆web✓</text>
+<rect x="229.6" y="156" width="134.4" height="26" rx="4" fill="#1c1f26"/><text x="236.6" y="174" fill="#c9d1d9" font-size="14" xml:space="preserve">2.◆api▶12⚙1·3m</text>
+<rect x="372.0" y="156" width="74.2" height="26" rx="4" fill="#ffaf00"/><text x="379.0" y="174" fill="#121212" font-size="14" font-weight="700" xml:space="preserve">3.◆etl?</text>
+<rect x="454.2" y="156" width="65.6" height="26" rx="4" fill="#1c1f26"/><text x="461.2" y="174" fill="#c9d1d9" font-size="14" xml:space="preserve">4.◆ui·</text>
+<rect x="527.8" y="156" width="74.2" height="26" rx="4" fill="#171a20"/><text x="534.8" y="174" fill="#8b949e" font-size="14" xml:space="preserve">5.notes</text>
+<text x="952" y="174" text-anchor="end" font-size="14" fill="#61afef" font-weight="700" xml:space="preserve">!1 ?1 ✓1 ▶1</text>
+</svg>
